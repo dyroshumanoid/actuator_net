@@ -114,7 +114,8 @@ def load_dataloaders(load_path):
 
 def train_actuator_network(xs, ys, batch_size, num_samples_in_history, units, layers, lr, epochs, eps, weight_decay,
                            actuator_network_path, dataloader_path, model_type, num_joints=1,
-                           pretrained_model_path=None, save_dataloaders_flag=True, return_stats=False):
+                           pretrained_model_path=None, save_dataloaders_flag=True, return_stats=False,
+                           global_step_offset=0, log_dir=None):
     print(xs.shape, ys.shape)
     num_data = xs.shape[0]
     num_train = num_data // 5 * 4
@@ -141,9 +142,9 @@ def train_actuator_network(xs, ys, batch_size, num_samples_in_history, units, la
     device = 'cuda:0'
     model = model.to(device)
 
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d_%I-%M%p")
-    run_name = f"bs{batch_size}_u{units}_l{layers}_lr{lr}_eps{eps}_wd{weight_decay}_ns{num_samples_in_history}_{current_time}"
-    log_dir = f'./logs/{run_name}'
+    if log_dir is None:
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d_%I-%M%p")
+        log_dir = f'./logs/bs{batch_size}_u{units}_l{layers}_lr{lr}_eps{eps}_wd{weight_decay}_ns{num_samples_in_history}_{current_time}'
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir)
 
@@ -205,9 +206,10 @@ def train_actuator_network(xs, ys, batch_size, num_samples_in_history, units, la
             mae /= ct
 
         # Log losses and MAE for each epoch within the same hparam context
-        writer.add_scalar('Loss/train', epoch_loss, epoch)
-        writer.add_scalar('Loss/test', test_loss, epoch)
-        writer.add_scalar('MAE/test', mae, epoch)
+        global_step = global_step_offset + epoch
+        writer.add_scalar('Loss/train', epoch_loss, global_step)
+        writer.add_scalar('Loss/test', test_loss, global_step)
+        writer.add_scalar('MAE/test', mae, global_step)
 
         print(f'epoch: {epoch} | loss: {epoch_loss:.4f} | test loss: {test_loss:.4f} | mae: {mae:.4f}')
 
@@ -224,19 +226,21 @@ def train_actuator_network(xs, ys, batch_size, num_samples_in_history, units, la
     else:
         return model
 
-# 10 actuator groups: single joints or coupled pairs.
+# 12 individual actuator groups (one network per joint, no coupling).
 # Indices refer to joint_position_errors/velocities/tau_ests columns (0-based, after platform is stripped).
 JOINT_GROUPS = [
-    ([0],     "left_hip_roll"),
-    ([1],     "left_hip_pitch"),
-    ([2],     "left_hip_yaw"),
-    ([3],     "left_knee_pitch"),
-    ([4, 5],  "left_ankle"),       # coupled: pitch + roll
-    ([6],     "right_hip_roll"),
-    ([7],     "right_hip_pitch"),
-    ([8],     "right_hip_yaw"),
-    ([9],     "right_knee_pitch"),
-    ([10, 11],"right_ankle"),      # coupled: pitch + roll
+    ([0],  "left_hip_roll"),
+    ([1],  "left_hip_pitch"),
+    ([2],  "left_hip_yaw"),
+    ([3],  "left_knee_pitch"),
+    ([4],  "left_ankle_pitch"),
+    ([5],  "left_ankle_roll"),
+    ([6],  "right_hip_roll"),
+    ([7],  "right_hip_pitch"),
+    ([8],  "right_hip_yaw"),
+    ([9],  "right_knee_pitch"),
+    ([10], "right_ankle_pitch"),
+    ([11], "right_ankle_roll"),
 ]
 
 EVAL_PKL_NAME = "data_period2.0_radius_0.03.pkl"
@@ -370,7 +374,7 @@ def prepare_data_for_joint_group(joint_position_errors, joint_velocities, tau_es
     return xs, ys
 
 def train_actuator_network_and_plot_predictions(experiment_dir, actuator_network_path, dataloader_path, model_type, load_pretrained_model=False):
-    hyperparam_sweep = True
+    hyperparam_sweep = False
     best_params_path = os.path.join(os.path.dirname(actuator_network_path) or ".", "best_params.json")
     all_pkl_files = [f for f in sorted(glob(f"{experiment_dir}/*.pkl"))
                      if os.path.basename(f) != EVAL_PKL_NAME]
@@ -385,8 +389,8 @@ def train_actuator_network_and_plot_predictions(experiment_dir, actuator_network
         if hyperparam_sweep:
             param_grid = {
                 'batch_size': [64],
-                'units': [32, 48, 64],
-                'layers': [2, 3, 4],
+                'units': [32],
+                'layers': [2],
                 'lr': [8e-4, 8e-3, 1e-4],
                 'eps': [1e-8],
                 'weight_decay': [0.0, 1e-8],
@@ -444,7 +448,7 @@ def train_actuator_network_and_plot_predictions(experiment_dir, actuator_network
                 saved_best[group_name] = fixed_params
 
         # Sequential training: pkl outer loop, group inner loop
-        FINETUNE_EPOCH_RATIO = 0.1
+        FINETUNE_EPOCH_RATIO = 0.5
 
         # Clear any leftover checkpoints so first pkl always starts from scratch
         for _, group_name in JOINT_GROUPS:
@@ -452,9 +456,11 @@ def train_actuator_network_and_plot_predictions(experiment_dir, actuator_network
             if os.path.exists(group_net_path):
                 os.remove(group_net_path)
 
-        for pkl_idx, pkl_path in enumerate(all_pkl_files):
+        group_epoch_offset = {group_name: 0 for _, group_name in JOINT_GROUPS}
+
+        for pkl_idx, pkl_path in tqdm(enumerate(all_pkl_files), total=len(all_pkl_files), desc="PKL files"):
             print(f"\n{'='*60}\nPKL {pkl_idx+1}/{len(all_pkl_files)}: {os.path.basename(pkl_path)}\n{'='*60}")
-            for joint_indices, group_name in JOINT_GROUPS:
+            for joint_indices, group_name in tqdm(JOINT_GROUPS, desc="Joint groups", leave=False):
                 params = saved_best.get(group_name)
                 if params is None:
                     continue
@@ -463,6 +469,7 @@ def train_actuator_network_and_plot_predictions(experiment_dir, actuator_network
                 group_net_path   = actuator_network_path.replace(".pt", f"_{group_name}.pt")
                 group_dl_path    = dataloader_path.replace(".dataloader", f"_{group_name}.dataloader")
                 fine_tune_epochs = max(20, int(params['epochs'] * FINETUNE_EPOCH_RATIO))
+                group_log_dir    = f'./logs/{group_name}'
 
                 jpe, jv, te = load_single_experiment(pkl_path, torque_scaling=.01)
                 train_xs, train_ys = prepare_data_for_joint_group(
@@ -479,7 +486,11 @@ def train_actuator_network_and_plot_predictions(experiment_dir, actuator_network
                     actuator_network_path=group_net_path,
                     dataloader_path=group_dl_path,
                     model_type=model_type, num_joints=num_joints,
-                    pretrained_model_path=pretrained)
+                    pretrained_model_path=pretrained,
+                    global_step_offset=group_epoch_offset[group_name],
+                    log_dir=group_log_dir)
+
+                group_epoch_offset[group_name] += fine_tune_epochs
 
     print("\nAll groups done.")
     return saved_best

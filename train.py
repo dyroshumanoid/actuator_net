@@ -1,8 +1,8 @@
 from utils import train_actuator_network_and_plot_predictions
 
 EXPERIMENT_DIR     = '/home/dyros/scraps/actuator_net/data/pkl'
-ACTUATOR_NET_PATH  = 'hashi.pt'
-DATALOADER_PATH    = 'hashi.dataloader'
+ACTUATOR_NET_PATH  = 'p73.pt'
+DATALOADER_PATH    = 'p73.dataloader'
 MODEL_TYPE         = 'mlp'
 
 train_actuator_network_and_plot_predictions(

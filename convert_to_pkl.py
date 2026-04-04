@@ -41,38 +41,37 @@ JOINT_NAMES = [
 ]
 
 
-def convert_experiment(exp_dir: Path, has_timestamp: bool, dt: float = 0.001):
+def convert_experiment(exp_dir: Path, dt: float = 0.001):
     """Load txt logs from one experiment and return a list of timestep dicts."""
     pos = np.loadtxt(exp_dir / "joint_position_log.txt")
     vel = np.loadtxt(exp_dir / "joint_velocity_log.txt")
     des = np.loadtxt(exp_dir / "joint_desired_log.txt")
     trq = np.loadtxt(exp_dir / "torque_joint_log.txt")
 
-    if has_timestamp:
-        # col 0 = timestamp, cols 1-12 = 12 joints, col 13 = platform
-        timestamps = pos[:, 0]
-        pos_data   = pos[:, 1:13]
-        vel_data   = vel[:, 1:13]
-        des_data   = des[:, 1:13]
+    # Auto-detect: 14-col files have a timestamp in col 0; 13-col files do not
+    if pos.shape[1] == 14:
+        # col 0 = timestamp, cols 1-12 = 12 joints, col 13 = misc/platform
+        timestamps   = pos[:, 0]
+        pos_data     = pos[:, 1:13]
+        vel_data     = vel[:, 1:13]
+        des_data     = des[:, 1:13]
+        trq_data     = trq[:, 1:13]
         platform_pos = pos[:, 13]
         platform_vel = vel[:, 13]
         platform_des = des[:, 13]
-        # torque: col 0 = timestamp, cols 1-12 = joint torques, col 13 = platform torque
-        trq_data        = trq[:, 1:13]
-        platform_trq    = trq[:, 13]
+        platform_trq = trq[:, 13]
     else:
-        # no timestamp column; cols 0-11 = 12 joints, col 12 = platform
-        n = pos.shape[0]
-        timestamps = np.arange(n, dtype=float) * dt
-        pos_data   = pos[:, 0:12]
-        vel_data   = vel[:, 0:12]
-        des_data   = des[:, 0:12]
+        # 13-col: no timestamp; cols 0-11 = 12 joints, col 12 = misc/platform
+        n            = pos.shape[0]
+        timestamps   = np.arange(n, dtype=float) * dt
+        pos_data     = pos[:, 0:12]
+        vel_data     = vel[:, 0:12]
+        des_data     = des[:, 0:12]
         platform_pos = pos[:, 12]
         platform_vel = vel[:, 12]
         platform_des = des[:, 12]
-        # torque: cols 0-11 = joint torques, col 12 = platform torque, cols 13-25 = motor torques
-        trq_data        = trq[:, 0:12]
-        platform_trq    = trq[:, 12]
+        trq_data     = trq[:, 0:12]
+        platform_trq = trq[:, 12]
 
     records = []
     for i, t in enumerate(timestamps):
@@ -90,22 +89,22 @@ def convert_experiment(exp_dir: Path, has_timestamp: bool, dt: float = 0.001):
     return records
 
 
-def convert_directory(data_dir: Path, has_timestamp: bool, dt: float = 0.001):
+def convert_directory(data_dir: Path, dt: float = 0.001):
     for exp_dir in sorted(data_dir.iterdir()):
         if not exp_dir.is_dir():
             continue
         print(f"  {exp_dir.name} ...", end=" ", flush=True)
-        records = convert_experiment(exp_dir, has_timestamp=has_timestamp, dt=dt)
+        records = convert_experiment(exp_dir, dt=dt)
         out_path = OUTPUT_DIR / f"{exp_dir.name}.pkl"
         with open(out_path, "wb") as f:
             pickle.dump(records, f)
         print(f"{len(records)} steps → {out_path.name}")
 
 
-print("Converting actuatornet experiments (with timestamp)...")
-convert_directory(DATA_ROOT / "actuatornet", has_timestamp=True)
+print("Converting actuatornet experiments...")
+convert_directory(DATA_ROOT / "actuatornet")
 
-print("Converting pace experiments (no timestamp, dt=0.001 s)...")
-convert_directory(DATA_ROOT / "pace", has_timestamp=False, dt=0.001)
+print("Converting pace experiments (dt=0.001 s)...")
+convert_directory(DATA_ROOT / "pace", dt=0.001)
 
 print(f"\nDone. PKL files saved to: {OUTPUT_DIR}")
